@@ -3,9 +3,9 @@
 --epoch 5
 --with_box_refine
 --lr_drop 4
---lr 2e-4
---lr_backbone 2e-5
---pretrained /home/aimll/mot/MOTRv2-main/pretrained/motrv2_dancetrack.pth
+--lr 2e-5
+--lr_backbone 2e-6
+--pretrained /home/aimll/mot/motrv2/pretrained/motrv2_dancetrack.pth
 --batch_size 1
 --sample_mode random_interval
 --sample_interval 10

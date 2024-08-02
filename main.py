@@ -199,6 +199,10 @@ def main(args):
     model, criterion, postprocessors = build_model(args)
     model.to(device)
 
+    # 冻结clip层参数，其余层以小学习率微调
+    for param in model.model.parameters():
+        param.requires_grad = False
+
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)

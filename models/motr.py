@@ -11,6 +11,8 @@
 """
 DETR model and criterion classes.
 """
+import sys
+sys.path.append('/home/aimll/mot/motrv2')
 import copy
 import math
 import numpy as np
@@ -31,7 +33,11 @@ from .matcher import build_matcher
 from .deformable_transformer_plus import build_deforamble_transformer, pos2posemb
 from .qim import build as build_query_interaction_layer
 from .deformable_detr import SetCriterion, MLP, sigmoid_focal_loss
-
+import sys
+sys.path.append('/home/aimll/mot/MOTRv2-main-test')
+import torch
+import clip
+from PIL import Image
 
 class ClipMatcher(SetCriterion):
     def __init__(self, num_classes,
@@ -380,6 +386,12 @@ class MOTR(nn.Module):
             two_stage: two-stage Deformable DETR
         """
         super().__init__()
+        self.linear2= nn.Linear(512, 400).cuda()
+        self.linear3 = nn.Linear(400, 300).cuda()
+        self.linear4 = nn.Linear(300, 256).cuda()
+        self.relu = nn.ReLU()
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
         self.num_queries = num_queries
         self.track_embed = track_embed
         self.transformer = transformer
@@ -494,7 +506,7 @@ class MOTR(nn.Module):
         return [{'pred_logits': a, 'pred_boxes': b, }
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
-    def _forward_single_image(self, samples, track_instances: Instances, gtboxes=None):
+    def _forward_single_image(self, image_features, samples, track_instances: Instances, gtboxes=None):
         features, pos = self.backbone(samples)
         src, mask = features[-1].decompose()
         assert mask is not None
@@ -532,6 +544,21 @@ class MOTR(nn.Module):
             query_embed = track_instances.query_pos
             ref_pts = track_instances.ref_pts
             attn_mask = None
+
+        # 添加clip image信息
+        out_channels = query_embed.shape[0]
+        image_features = image_features.squeeze(dim=0).float()
+        image_features = self.linear2(image_features)
+        image_features = self.relu(image_features)
+
+        image_features = self.linear3(image_features)
+        image_features = self.relu(image_features)
+
+        image_features = self.linear4(image_features)
+
+        image_features = image_features.unsqueeze(dim=0).float()
+        image_features = image_features.repeat(out_channels, 1)
+        query_embed = query_embed + image_features
 
         hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = \
             self.transformer(srcs, masks, pos, query_embed, ref_pts=ref_pts,
@@ -612,6 +639,21 @@ class MOTR(nn.Module):
 
     @torch.no_grad()
     def inference_single_image(self, img, ori_img_size, track_instances=None, proposals=None):
+
+        frame = img.squeeze(dim=0)
+        tensor = frame
+        tensor = tensor.cpu().clone()
+        tensor = tensor.squeeze(0)
+        tensor = tensor.permute(1, 2, 0)
+        image = tensor.numpy()
+        image = (image * 255).astype(np.uint8)
+        image = Image.fromarray(image)
+
+        image = self.preprocess(image).unsqueeze(0).to(self.device)
+        image_features = self.model.encode_image(image)
+        # print("##################")
+        # print(image_features.shape)
+        # print("##################")
         if not isinstance(img, NestedTensor):
             img = nested_tensor_from_tensor_list(img)
         if track_instances is None:
@@ -620,7 +662,8 @@ class MOTR(nn.Module):
             track_instances = Instances.cat([
                 self._generate_empty_tracks(proposals),
                 track_instances])
-        res = self._forward_single_image(img,
+
+        res = self._forward_single_image(image_features, img,
                                          track_instances=track_instances)
         res = self._post_process_single_image(res, track_instances, False)
 
@@ -639,6 +682,19 @@ class MOTR(nn.Module):
         if self.training:
             self.criterion.initialize_for_single_clip(data['gt_instances'])
         frames = data['imgs']  # list of Tensor.
+        tensor = frames[0]
+        tensor = tensor.cpu().clone()
+        tensor = tensor.squeeze(0)
+        tensor = tensor.permute(1, 2, 0)
+        image = tensor.numpy()
+        image = (image * 255).astype(np.uint8)
+        image = Image.fromarray(image)
+
+        image = self.preprocess(image).unsqueeze(0).to(self.device)
+        image_features = self.model.encode_image(image)
+        # print("########################")
+        # print(image_features.shape)
+        # print("########################")
         outputs = {
             'pred_logits': [],
             'pred_boxes': [],
@@ -664,12 +720,14 @@ class MOTR(nn.Module):
                 track_instances = Instances.cat([
                     self._generate_empty_tracks(proposals),
                     track_instances])
-
+            # print("###############################")
+            # print(type(track_instances))
+            # print("###############################")
             if self.use_checkpoint and frame_index < len(frames) - 1:
                 def fn(frame, gtboxes, *args):
                     frame = nested_tensor_from_tensor_list([frame])
                     tmp = Instances((1, 1), **dict(zip(keys, args)))
-                    frame_res = self._forward_single_image(frame, tmp, gtboxes)
+                    frame_res = self._forward_single_image(image_features, frame, tmp, gtboxes)
                     return (
                         frame_res['pred_logits'],
                         frame_res['pred_boxes'],
@@ -679,6 +737,7 @@ class MOTR(nn.Module):
                     )
 
                 args = [frame, gtboxes] + [track_instances.get(k) for k in keys]
+                # print(args)
                 params = tuple((p for p in self.parameters() if p.requires_grad))
                 tmp = checkpoint.CheckpointFunction.apply(fn, len(args), *args, *params)
                 frame_res = {
@@ -692,7 +751,7 @@ class MOTR(nn.Module):
                 }
             else:
                 frame = nested_tensor_from_tensor_list([frame])
-                frame_res = self._forward_single_image(frame, track_instances, gtboxes)
+                frame_res = self._forward_single_image(image_features, frame, track_instances, gtboxes)
             frame_res = self._post_process_single_image(frame_res, track_instances, is_last)
 
             track_instances = frame_res['track_instances']
