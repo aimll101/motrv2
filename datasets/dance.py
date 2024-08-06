@@ -222,8 +222,8 @@ class DetMOTDetection:
             vid, f_index = self.indices[idx]
             indices = self.sample_indices(vid, f_index)
             images, targets = self.pre_continuous_frames(vid, indices)
-        else:
-            images, targets = self.load_crowd(idx - len(self.indices))
+        # else:
+        #     images, targets = self.load_crowd(idx - len(self.indices))
         if self.transform is not None:
             images, targets = self.transform(images, targets)
         gt_instances, proposals = [], []
@@ -242,8 +242,8 @@ class DetMOTDetection:
         }
 
     def __len__(self):
-        return len(self.indices) + len(self.ch_indices)
-
+        # return len(self.indices) + len(self.ch_indices)
+        return len(self.indices)
 
 class DetMOTDetectionValidation(DetMOTDetection):
     def __init__(self, args, seqs_folder, transform):
