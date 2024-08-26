@@ -12,7 +12,8 @@
 DETR model and criterion classes.
 """
 import sys
-sys.path.append('/home/aimll/mot/motrv2')
+sys.path.append('/home/jundu/motrv2')
+sys.path.append("/home/jundu/motrv2/models")
 import copy
 import math
 import numpy as np
@@ -38,7 +39,7 @@ sys.path.append('/home/aimll/mot/MOTRv2-main-test')
 import torch
 import clip
 from PIL import Image
-
+from ASPP import ASPP
 class ClipMatcher(SetCriterion):
     def __init__(self, num_classes,
                         matcher,
@@ -386,12 +387,37 @@ class MOTR(nn.Module):
             two_stage: two-stage Deformable DETR
         """
         super().__init__()
-        self.linear2= nn.Linear(512, 400).cuda()
+        # 添加卷积层
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=16, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(in_channels=1, out_channels=16, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(in_channels=256, out_channels=16, kernel_size=1, padding=0)
+        self.conv4 = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=1, padding=0)
+        # 添加aspp层
+        self.aspp = ASPP(32, [6, 12, 18])
+        # 添加MLP
+        self.linear2 = nn.Linear(512, 400).cuda()
         self.linear3 = nn.Linear(400, 300).cuda()
         self.linear4 = nn.Linear(300, 256).cuda()
+        self.linear5 = nn.Linear(256 * 256, 32* 32).cuda()
+        self.linear6 = nn.Linear(32 * 32, 256 * 256).cuda()
+        self.linear7 = nn.Linear(256 * 256, 32* 32).cuda()
+        self.linear8 = nn.Linear(32 * 32, 256 * 256).cuda()
+        self.linear9 = nn.Linear(256 * 256, 32* 32).cuda()
+        self.linear10 = nn.Linear(32* 32, 256).cuda()
+        # 添加多头自注意力层
+        self.multihead_attn1 = nn.MultiheadAttention(256, 8, dropout=0.1)
+        self.multihead_attn2 = nn.MultiheadAttention(256, 8, dropout=0.1)
+        self.multihead_attn3 = nn.MultiheadAttention(256, 8, dropout=0.1)
+        # 添加batchnormal层
+        self.batchnormal1 = nn.BatchNorm1d(256) 
+        self.batchnormal2 = nn.BatchNorm1d(256)
+        self.batchnormal3 = nn.BatchNorm1d(256)  
         self.relu = nn.ReLU()
+        self.softmax = nn.Softmax(dim=1)
+        # 添加clip层
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
+        
         self.num_queries = num_queries
         self.track_embed = track_embed
         self.transformer = transformer
@@ -557,8 +583,68 @@ class MOTR(nn.Module):
         image_features = self.linear4(image_features)
 
         image_features = image_features.unsqueeze(dim=0).float()
+
         image_features = image_features.repeat(out_channels, 1)
-        query_embed = query_embed + image_features
+        desired_length = 256 * 256
+        padding = desired_length - image_features.numel()
+        feature1 = torch.nn.functional.pad(image_features.view(1, -1), (0, padding))
+        feature1 = self.linear5(feature1)
+        feature1 = self.relu(feature1)
+        feature1 = self.linear6(feature1)
+        feature1 = self.relu(feature1)
+        feature1 = feature1.view(1, 1, 256, 256)
+        feature1 = self.conv1(feature1)
+        feature1 = self.relu(feature1)
+        # 通过多头自注意力模块1
+        feature1 = feature1.squeeze(0)
+        feature_attn1, attn_output_weights = self.multihead_attn1(feature1, feature1, feature1)
+        feature1 = feature1 + feature_attn1
+        feature1 = self.batchnormal1(feature1)
+        feature1 = feature1.unsqueeze(dim=0).float()
+        
+        feature2 = torch.nn.functional.pad(query_embed.view(1, -1), (0, padding))
+        feature2 = self.linear7(feature2)
+        feature2 = self.relu(feature2)
+        feature2 = self.linear8(feature2)
+        feature2 = self.relu(feature2)
+        feature2 = feature2.view(1, 1, 256, 256)
+        feature2 = self.conv2(feature2)
+        feature2 = self.relu(feature2)
+        # 通过多头自注意力模块2
+        feature2 = feature2.squeeze(0)
+        feature_attn2, attn_output_weights = self.multihead_attn2(feature2, feature2, feature2)
+        feature2 = feature2 + feature_attn2
+        feature2 = self.batchnormal2(feature2)
+        feature2 = feature2.unsqueeze(dim=0).float()
+
+        feature_contcat = torch.cat((feature1, feature2), dim=1)
+        # 通过ASPP模块
+        feature_contcat = self.aspp(feature_contcat)
+        feature_contcat = self.conv3(feature_contcat)
+        w1 = self.softmax(feature_contcat)
+        fusion_feature = w1 * feature1 + (1-w1) * feature2
+        # 通过多头自注意力模块3
+        fusion_feature = fusion_feature.squeeze(0)
+        feature_attn3, attn_output_weights = self.multihead_attn3(fusion_feature, fusion_feature, fusion_feature)
+        fusion_feature = fusion_feature + feature_attn3
+        fusion_feature = self.batchnormal3(fusion_feature)
+        fusion_feature = fusion_feature.unsqueeze(dim=0).float()
+        
+        fusion_feature = self.conv4(fusion_feature)
+        fusion_feature = fusion_feature.view(-1)
+        fusion_feature = self.linear9(fusion_feature)
+        fusion_feature = self.relu(fusion_feature)
+        fusion_feature = self.linear10(fusion_feature)
+        fusion_feature = self.relu(fusion_feature)
+        fusion_feature = fusion_feature.repeat(out_channels, 1)
+        query_embed = query_embed + fusion_feature
+        # x = torch.rand(1, 32, 256, 256).cuda()
+        # print(self.aspp(x).shape)
+        # print("##################")
+        # print(feature1.shape)
+        # print(feature2.shape)
+        # print(query_embed.shape)
+        # print("##################")
 
         hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = \
             self.transformer(srcs, masks, pos, query_embed, ref_pts=ref_pts,

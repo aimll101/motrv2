@@ -113,7 +113,7 @@ class Detector(object):
         total_occlusion_dts = 0
 
         track_instances = None
-        self.args.mot_path = '/home/aimll/mot/data/Dataset/mot'
+        self.args.mot_path = '/home/jundu/data/Dataset/mot'
         with open(os.path.join(self.args.mot_path, self.args.det_db)) as f:
             det_db = json.load(f)
         loader = DataLoader(ListImgDataset(self.args.mot_path, self.img_list, det_db), 1, num_workers=2)
@@ -199,7 +199,7 @@ if __name__ == '__main__':
     detr = detr.cuda()
 
     # '''for MOT17 submit''' 
-    sub_dir = '/home/aimll/mot/data/Dataset/mot/DanceTrack/test'
+    sub_dir = '/home/jundu/data/Dataset/mot/DanceTrack/val'
     seq_nums = os.listdir(os.path.join(args.mot_path, sub_dir))
     if 'seqmap' in seq_nums:
         seq_nums.remove('seqmap')
