@@ -12,7 +12,9 @@
 DETR model and criterion classes.
 """
 import sys
-sys.path.append('/home/aimll/mot/motrv2')
+
+sys.path.append('/home/jundu/motrv2')
+sys.path.append("/home/jundu/motrv2/models")
 import copy
 import math
 import numpy as np
@@ -34,16 +36,21 @@ from .deformable_transformer_plus import build_deforamble_transformer, pos2posem
 from .qim import build as build_query_interaction_layer
 from .deformable_detr import SetCriterion, MLP, sigmoid_focal_loss
 import sys
+
 sys.path.append('/home/aimll/mot/MOTRv2-main-test')
 import torch
 import clip
 from PIL import Image
+from ASPP import ASPP
+from ChannelAttention import ChannelAttention
+from SpatialAttention import SpatialAttention
+
 
 class ClipMatcher(SetCriterion):
     def __init__(self, num_classes,
-                        matcher,
-                        weight_dict,
-                        losses):
+                 matcher,
+                 weight_dict,
+                 losses):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -114,7 +121,7 @@ class ClipMatcher(SetCriterion):
            The target boxes are expected in format (center_x, center_y, h, w), normalized by the image size.
         """
         # We ignore the regression loss of the track-disappear slots.
-        #TODO: Make this filter process more elegant.
+        # TODO: Make this filter process more elegant.
         filtered_idx = []
         for src_per_img, tgt_per_img in indices:
             keep = tgt_per_img != -1
@@ -125,7 +132,8 @@ class ClipMatcher(SetCriterion):
         target_boxes = torch.cat([gt_per_img.boxes[i] for gt_per_img, (_, i) in zip(gt_instances, indices)], dim=0)
 
         # for pad target, don't calculate regression loss, judged by whether obj_id=-1
-        target_obj_ids = torch.cat([gt_per_img.obj_ids[i] for gt_per_img, (_, i) in zip(gt_instances, indices)], dim=0) # size(16)
+        target_obj_ids = torch.cat([gt_per_img.obj_ids[i] for gt_per_img, (_, i) in zip(gt_instances, indices)],
+                                   dim=0)  # size(16)
         mask = (target_obj_ids != -1)
 
         loss_bbox = F.l1_loss(src_boxes[mask], target_boxes[mask], reduction='none')
@@ -158,13 +166,14 @@ class ClipMatcher(SetCriterion):
         target_classes_o = torch.cat(labels)
         target_classes[idx] = target_classes_o
         if self.focal_loss:
-            gt_labels_target = F.one_hot(target_classes, num_classes=self.num_classes + 1)[:, :, :-1]  # no loss for the last (background) class
+            gt_labels_target = F.one_hot(target_classes, num_classes=self.num_classes + 1)[:, :,
+                               :-1]  # no loss for the last (background) class
             gt_labels_target = gt_labels_target.to(src_logits)
             loss_ce = sigmoid_focal_loss(src_logits.flatten(1),
-                                             gt_labels_target.flatten(1),
-                                             alpha=0.25,
-                                             gamma=2,
-                                             num_boxes=num_boxes, mean_in_dim1=False)
+                                         gt_labels_target.flatten(1),
+                                         alpha=0.25,
+                                         gamma=2,
+                                         num_boxes=num_boxes, mean_in_dim1=False)
             loss_ce = loss_ce.sum()
         else:
             loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
@@ -197,7 +206,7 @@ class ClipMatcher(SetCriterion):
         track_instances.matched_gt_idxes[i] = j
 
         full_track_idxes = torch.arange(len(track_instances), dtype=torch.long, device=pred_logits_i.device)
-        matched_track_idxes = (track_instances.obj_idxes >= 0)  # occu 
+        matched_track_idxes = (track_instances.obj_idxes >= 0)  # occu
         prev_matched_indices = torch.stack(
             [full_track_idxes[matched_track_idxes], track_instances.matched_gt_idxes[matched_track_idxes]], dim=1)
 
@@ -217,7 +226,7 @@ class ClipMatcher(SetCriterion):
 
         def match_for_single_decoder_layer(unmatched_outputs, matcher):
             new_track_indices = matcher(unmatched_outputs,
-                                             [untracked_gt_instances])  # list[tuple(src_idx, tgt_idx)]
+                                        [untracked_gt_instances])  # list[tuple(src_idx, tgt_idx)]
 
             src_idx = new_track_indices[0][0]
             tgt_idx = new_track_indices[0][1]
@@ -286,13 +295,13 @@ class ClipMatcher(SetCriterion):
             for i, aux_outputs in enumerate(outputs['ps_outputs']):
                 ar = torch.arange(len(gt_instances_i), device=obj_idxes.device)
                 l_dict = self.get_loss('boxes',
-                                        aux_outputs,
-                                        gt_instances=[gt_instances_i],
-                                        indices=[(ar, ar)],
-                                        num_boxes=1, )
+                                       aux_outputs,
+                                       gt_instances=[gt_instances_i],
+                                       indices=[(ar, ar)],
+                                       num_boxes=1, )
                 self.losses_dict.update(
                     {'frame_{}_ps{}_{}'.format(self._current_frame_idx, i, key): value for key, value in
-                        l_dict.items()})
+                     l_dict.items()})
         self._step()
         return track_instances
 
@@ -333,6 +342,7 @@ class RuntimeTrackerBase(object):
 
 class TrackerPostProcess(nn.Module):
     """ This module converts the model's output into the format expected by the coco api"""
+
     def __init__(self):
         super().__init__()
 
@@ -373,7 +383,8 @@ def _get_clones(module, N):
 
 class MOTR(nn.Module):
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels, criterion, track_embed,
-                 aux_loss=True, with_box_refine=False, two_stage=False, memory_bank=None, use_checkpoint=False, query_denoise=0):
+                 aux_loss=True, with_box_refine=False, two_stage=False, memory_bank=None, use_checkpoint=False,
+                 query_denoise=0):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -386,12 +397,53 @@ class MOTR(nn.Module):
             two_stage: two-stage Deformable DETR
         """
         super().__init__()
-        self.linear2= nn.Linear(512, 400).cuda()
+        # 添加通道注意力模块
+        self.channel_attention1 = ChannelAttention(16)
+        self.channel_attention2 = ChannelAttention(16)
+
+        # 添加空间注意力模块
+        self.spatial_attention1 = SpatialAttention()
+        self.spatial_attention2 = SpatialAttention()
+
+        # 添加卷积层
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=16, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(in_channels=1, out_channels=16, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(in_channels=256, out_channels=16, kernel_size=1, padding=0)
+        self.conv4 = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=1, padding=0)
+
+        # 添加MLP
+        self.linear2 = nn.Linear(512, 400).cuda()
         self.linear3 = nn.Linear(400, 300).cuda()
         self.linear4 = nn.Linear(300, 256).cuda()
+        self.linear5 = nn.Linear(256 * 256, 32 * 32).cuda()
+        self.linear6 = nn.Linear(32 * 32, 256 * 256).cuda()
+        self.linear7 = nn.Linear(256 * 256, 32 * 32).cuda()
+        self.linear8 = nn.Linear(32 * 32, 256 * 256).cuda()
+        self.linear9 = nn.Linear(256 * 256, 32 * 32).cuda()
+        self.linear10 = nn.Linear(32 * 32, 256).cuda()
+
+
+        # 添加aspp层
+        self.aspp = ASPP(32, [6, 12, 18])
+
+        # 添加多头自注意力层
+        self.multihead_attn1 = nn.MultiheadAttention(256, 8, dropout=0.1)
+        self.multihead_attn2 = nn.MultiheadAttention(256, 8, dropout=0.1)
+        self.multihead_attn3 = nn.MultiheadAttention(256, 8, dropout=0.1)
+        self.multihead_attn4 = nn.MultiheadAttention(256, 8, dropout=0.1)
+        self.multihead_attn5 = nn.MultiheadAttention(256, 8, dropout=0.1)
+        # 添加batchnormal层
+        self.batchnormal1 = nn.BatchNorm1d(256)
+        self.batchnormal2 = nn.BatchNorm1d(256)
+        self.batchnormal3 = nn.BatchNorm1d(256)
+        self.batchnormal4 = nn.BatchNorm1d(256)
+        self.batchnormal5 = nn.BatchNorm1d(256)
         self.relu = nn.ReLU()
+        self.softmax = nn.Softmax(dim=1)
+        # 添加clip层
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
+
         self.num_queries = num_queries
         self.track_embed = track_embed
         self.transformer = transformer
@@ -477,21 +529,25 @@ class MOTR(nn.Module):
             track_instances.query_pos = self.query_embed.weight
         else:
             track_instances.ref_pts = torch.cat([self.position.weight, proposals[:, :4]])
-            track_instances.query_pos = torch.cat([self.query_embed.weight, pos2posemb(proposals[:, 4:], d_model) + self.yolox_embed.weight])
+            track_instances.query_pos = torch.cat(
+                [self.query_embed.weight, pos2posemb(proposals[:, 4:], d_model) + self.yolox_embed.weight])
         track_instances.output_embedding = torch.zeros((len(track_instances), d_model), device=device)
         track_instances.obj_idxes = torch.full((len(track_instances),), -1, dtype=torch.long, device=device)
         track_instances.matched_gt_idxes = torch.full((len(track_instances),), -1, dtype=torch.long, device=device)
-        track_instances.disappear_time = torch.zeros((len(track_instances), ), dtype=torch.long, device=device)
+        track_instances.disappear_time = torch.zeros((len(track_instances),), dtype=torch.long, device=device)
         track_instances.iou = torch.ones((len(track_instances),), dtype=torch.float, device=device)
         track_instances.scores = torch.zeros((len(track_instances),), dtype=torch.float, device=device)
         track_instances.track_scores = torch.zeros((len(track_instances),), dtype=torch.float, device=device)
         track_instances.pred_boxes = torch.zeros((len(track_instances), 4), dtype=torch.float, device=device)
-        track_instances.pred_logits = torch.zeros((len(track_instances), self.num_classes), dtype=torch.float, device=device)
+        track_instances.pred_logits = torch.zeros((len(track_instances), self.num_classes), dtype=torch.float,
+                                                  device=device)
 
         mem_bank_len = self.mem_bank_len
-        track_instances.mem_bank = torch.zeros((len(track_instances), mem_bank_len, d_model), dtype=torch.float32, device=device)
-        track_instances.mem_padding_mask = torch.ones((len(track_instances), mem_bank_len), dtype=torch.bool, device=device)
-        track_instances.save_period = torch.zeros((len(track_instances), ), dtype=torch.float32, device=device)
+        track_instances.mem_bank = torch.zeros((len(track_instances), mem_bank_len, d_model), dtype=torch.float32,
+                                               device=device)
+        track_instances.mem_padding_mask = torch.ones((len(track_instances), mem_bank_len), dtype=torch.bool,
+                                                      device=device)
+        track_instances.save_period = torch.zeros((len(track_instances),), dtype=torch.float32, device=device)
 
         return track_instances.to(self.query_embed.weight.device)
 
@@ -557,12 +613,115 @@ class MOTR(nn.Module):
         image_features = self.linear4(image_features)
 
         image_features = image_features.unsqueeze(dim=0).float()
+
         image_features = image_features.repeat(out_channels, 1)
-        query_embed = query_embed + image_features
+        desired_length = 256 * 256
+        padding = desired_length - image_features.numel()
+        feature1 = torch.nn.functional.pad(image_features.view(1, -1), (0, padding))
+        feature1 = self.linear5(feature1)
+        feature1 = self.relu(feature1)
+        feature1 = self.linear6(feature1)
+        feature1 = self.relu(feature1)
+        feature1 = feature1.view(1, 1, 256, 256)
+        feature1 = self.conv1(feature1)
+        feature1 = self.relu(feature1)
+
+        feature2 = torch.nn.functional.pad(query_embed.view(1, -1), (0, padding))
+        feature2 = self.linear7(feature2)
+        feature2 = self.relu(feature2)
+        feature2 = self.linear8(feature2)
+        feature2 = self.relu(feature2)
+        feature2 = feature2.view(1, 1, 256, 256)
+        feature2 = self.conv2(feature2)
+        feature2 = self.relu(feature2)
+
+        # MOT-Adapter流程
+        feature1_channel = self.channel_attention1(feature1)
+
+        feature1_spatial = self.spatial_attention1(feature1)
+
+        feature2_channel = self.channel_attention2(feature2)
+
+        feature2_spatial = self.spatial_attention2(feature2)
+
+        # 融合特征
+        channel_fusion = feature1_channel * feature2_channel
+        spatial_fusion = feature1_spatial * feature2_spatial
+
+        # channel_fusion通过多头自注意力模块4
+        channel_fusion = channel_fusion.squeeze(0)
+        feature_attn4, attn_output_weights = self.multihead_attn4(channel_fusion, channel_fusion, channel_fusion)
+        channel_fusion = channel_fusion + feature_attn4
+        channel_fusion = self.batchnormal4(channel_fusion)
+        channel_fusion = channel_fusion.unsqueeze(dim=0).float()
+
+        # spatial_fusion通过多头自注意力模块5
+        spatial_fusion = spatial_fusion.squeeze(0)
+        feature_attn5, attn_output_weights = self.multihead_attn5(spatial_fusion, spatial_fusion, spatial_fusion)
+        spatial_fusion = spatial_fusion + feature_attn5
+        spatial_fusion = self.batchnormal5(spatial_fusion)
+        spatial_fusion = spatial_fusion.unsqueeze(dim=0).float()
+
+        # 获得adapter后的特征
+        feature1_adapter = channel_fusion + spatial_fusion
+        feature1_adapter = feature1 + feature1_adapter
+
+        # fusion_feature = self.conv4(feature1_adapter)
+        # fusion_feature = fusion_feature.view(-1)
+        # fusion_feature = self.linear9(fusion_feature)
+        # fusion_feature = self.relu(fusion_feature)
+        # fusion_feature = self.linear10(fusion_feature)
+        # fusion_feature = self.relu(fusion_feature)
+        # fusion_feature = fusion_feature.repeat(out_channels, 1)
+        # query_embed = query_embed + fusion_feature
+
+        # 通过多头自注意力模块1
+        feature1 = feature1_adapter.squeeze(0)
+        feature_attn1, attn_output_weights = self.multihead_attn1(feature1, feature1, feature1)
+        feature1 = feature1 + feature_attn1
+        feature1 = self.batchnormal1(feature1)
+        feature1 = feature1.unsqueeze(dim=0).float()
+        # 通过多头自注意力模块2
+        feature2 = feature2.squeeze(0)
+        feature_attn2, attn_output_weights = self.multihead_attn2(feature2, feature2, feature2)
+        feature2 = feature2 + feature_attn2
+        feature2 = self.batchnormal2(feature2)
+        feature2 = feature2.unsqueeze(dim=0).float()
+
+        feature_contcat = torch.cat((feature1, feature2), dim=1)
+        # 通过ASPP模块
+        feature_contcat = self.aspp(feature_contcat)
+        feature_contcat = self.conv3(feature_contcat)
+        w1 = self.softmax(feature_contcat)
+        fusion_feature = w1 * feature1 + (1-w1) * feature2
+        # 通过多头自注意力模块3
+        fusion_feature = fusion_feature.squeeze(0)
+        feature_attn3, attn_output_weights = self.multihead_attn3(fusion_feature, fusion_feature, fusion_feature)
+        fusion_feature = fusion_feature + feature_attn3
+        fusion_feature = self.batchnormal3(fusion_feature)
+        fusion_feature = fusion_feature.unsqueeze(dim=0).float()
+
+        fusion_feature = self.conv4(fusion_feature)
+        fusion_feature = fusion_feature.view(-1)
+        fusion_feature = self.linear9(fusion_feature)
+        fusion_feature = self.relu(fusion_feature)
+        fusion_feature = self.linear10(fusion_feature)
+        fusion_feature = self.relu(fusion_feature)
+        fusion_feature = fusion_feature.repeat(out_channels, 1)
+        query_embed = query_embed + fusion_feature
+
+        # x = torch.rand(1, 32, 256, 256).cuda()
+        # print(self.aspp(x).shape)
+        # print("##################")
+        # print(feature1.shape)
+        # print(feature2.shape)
+        # print(query_embed.shape)
+        # print("##################")
 
         hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = \
             self.transformer(srcs, masks, pos, query_embed, ref_pts=ref_pts,
-                             mem_bank=track_instances.mem_bank, mem_bank_pad_mask=track_instances.mem_padding_mask, attn_mask=attn_mask)
+                             mem_bank=track_instances.mem_bank, mem_bank_pad_mask=track_instances.mem_padding_mask,
+                             attn_mask=attn_mask)
 
         outputs_classes = []
         outputs_coords = []
@@ -745,8 +904,8 @@ class MOTR(nn.Module):
                     'pred_boxes': tmp[1],
                     'hs': tmp[2],
                     'aux_outputs': [{
-                        'pred_logits': tmp[3+i],
-                        'pred_boxes': tmp[3+5+i],
+                        'pred_logits': tmp[3 + i],
+                        'pred_boxes': tmp[3 + 5 + i],
                     } for i in range(5)],
                 }
             else:
@@ -783,7 +942,8 @@ def build(args):
     transformer = build_deforamble_transformer(args)
     d_model = transformer.d_model
     hidden_dim = args.dim_feedforward
-    query_interaction_layer = build_query_interaction_layer(args, args.query_interaction_layer, d_model, hidden_dim, d_model*2)
+    query_interaction_layer = build_query_interaction_layer(args, args.query_interaction_layer, d_model, hidden_dim,
+                                                            d_model * 2)
 
     img_matcher = build_matcher(args)
     num_frames_per_batch = max(args.sampler_lengths)

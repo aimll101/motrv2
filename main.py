@@ -199,10 +199,13 @@ def main(args):
     model, criterion, postprocessors = build_model(args)
     model.to(device)
 
-    # 冻结clip层参数，其余层以小学习率微调
-    for param in model.model.parameters():
-        param.requires_grad = False
-
+    # 冻结clip层及motrv2原始参数
+    for i, param in enumerate(model.parameters()):
+        if i >= 86:
+            param.requires_grad = False
+    # for name, param in model.named_parameters():
+    #     print(name, param.requires_grad)
+    
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
