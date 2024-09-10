@@ -201,7 +201,7 @@ def main(args):
 
     # 冻结clip层及motrv2原始参数
     for i, param in enumerate(model.parameters()):
-        if i >= 86:
+        if i >= 80:
             param.requires_grad = False
     # for name, param in model.named_parameters():
     #     print(name, param.requires_grad)

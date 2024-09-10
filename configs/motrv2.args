@@ -1,6 +1,6 @@
 --meta_arch motr
 --dataset_file e2e_dance
---epoch 5
+--epoch 1
 --with_box_refine
 --lr_drop 4
 --lr 2e-5

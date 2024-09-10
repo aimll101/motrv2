@@ -44,6 +44,7 @@ from PIL import Image
 from ASPP import ASPP
 from ChannelAttention import ChannelAttention
 from SpatialAttention import SpatialAttention
+from CBAM import CBAM
 
 
 class ClipMatcher(SetCriterion):
@@ -424,22 +425,31 @@ class MOTR(nn.Module):
 
 
         # 添加aspp层
-        self.aspp = ASPP(32, [6, 12, 18])
+        #self.aspp = ASPP(32, [6, 12, 18])
 
         # 添加多头自注意力层
-        self.multihead_attn1 = nn.MultiheadAttention(256, 8, dropout=0.1)
-        self.multihead_attn2 = nn.MultiheadAttention(256, 8, dropout=0.1)
-        self.multihead_attn3 = nn.MultiheadAttention(256, 8, dropout=0.1)
+        # self.multihead_attn1 = nn.MultiheadAttention(256, 8, dropout=0.1)
+        # self.multihead_attn2 = nn.MultiheadAttention(256, 8, dropout=0.1)
+        # self.multihead_attn3 = nn.MultiheadAttention(256, 8, dropout=0.1)
         self.multihead_attn4 = nn.MultiheadAttention(256, 8, dropout=0.1)
         self.multihead_attn5 = nn.MultiheadAttention(256, 8, dropout=0.1)
         # 添加batchnormal层
-        self.batchnormal1 = nn.BatchNorm1d(256)
-        self.batchnormal2 = nn.BatchNorm1d(256)
-        self.batchnormal3 = nn.BatchNorm1d(256)
+        # self.batchnormal1 = nn.BatchNorm1d(256)
+        # self.batchnormal2 = nn.BatchNorm1d(256)
+        # self.batchnormal3 = nn.BatchNorm1d(256)
         self.batchnormal4 = nn.BatchNorm1d(256)
         self.batchnormal5 = nn.BatchNorm1d(256)
+
+        # 添加CBAM层
+        self.CBAM1 = CBAM(16)
+        self.CBAM2 = CBAM(16)
+        self.CBAM3 = CBAM(16)
+        self.CBAM4 = CBAM(16)
+        self.CBAM5 = CBAM(16)
+
         self.relu = nn.ReLU()
         self.softmax = nn.Softmax(dim=1)
+
         # 添加clip层
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
@@ -665,41 +675,44 @@ class MOTR(nn.Module):
         # 获得adapter后的特征
         feature1_adapter = channel_fusion + spatial_fusion
         feature1_adapter = feature1 + feature1_adapter
+        
+        # 相加融合
+        # fusion_feature = feature1_adapter + feature2
 
-        # fusion_feature = self.conv4(feature1_adapter)
-        # fusion_feature = fusion_feature.view(-1)
-        # fusion_feature = self.linear9(fusion_feature)
-        # fusion_feature = self.relu(fusion_feature)
-        # fusion_feature = self.linear10(fusion_feature)
-        # fusion_feature = self.relu(fusion_feature)
-        # fusion_feature = fusion_feature.repeat(out_channels, 1)
-        # query_embed = query_embed + fusion_feature
+        # CBAM融合
+        fusion_feature = feature1_adapter + feature2
+        fusion_feature = self.CBAM1(fusion_feature)
+        fusion_feature = self.CBAM2(fusion_feature)
+        fusion_feature = self.CBAM3(fusion_feature)
+        fusion_feature = self.CBAM4(fusion_feature)
+        fusion_feature = self.CBAM5(fusion_feature)
 
-        # 通过多头自注意力模块1
-        feature1 = feature1_adapter.squeeze(0)
-        feature_attn1, attn_output_weights = self.multihead_attn1(feature1, feature1, feature1)
-        feature1 = feature1 + feature_attn1
-        feature1 = self.batchnormal1(feature1)
-        feature1 = feature1.unsqueeze(dim=0).float()
-        # 通过多头自注意力模块2
-        feature2 = feature2.squeeze(0)
-        feature_attn2, attn_output_weights = self.multihead_attn2(feature2, feature2, feature2)
-        feature2 = feature2 + feature_attn2
-        feature2 = self.batchnormal2(feature2)
-        feature2 = feature2.unsqueeze(dim=0).float()
+        # VTFM模块
+        # # 通过多头自注意力模块1
+        # feature1 = feature1_adapter.squeeze(0)
+        # feature_attn1, attn_output_weights = self.multihead_attn1(feature1, feature1, feature1)
+        # feature1 = feature1 + feature_attn1
+        # feature1 = self.batchnormal1(feature1)
+        # feature1 = feature1.unsqueeze(dim=0).float()
+        # # 通过多头自注意力模块2
+        # feature2 = feature2.squeeze(0)
+        # feature_attn2, attn_output_weights = self.multihead_attn2(feature2, feature2, feature2)
+        # feature2 = feature2 + feature_attn2
+        # feature2 = self.batchnormal2(feature2)
+        # feature2 = feature2.unsqueeze(dim=0).float()
 
-        feature_contcat = torch.cat((feature1, feature2), dim=1)
-        # 通过ASPP模块
-        feature_contcat = self.aspp(feature_contcat)
-        feature_contcat = self.conv3(feature_contcat)
-        w1 = self.softmax(feature_contcat)
-        fusion_feature = w1 * feature1 + (1-w1) * feature2
-        # 通过多头自注意力模块3
-        fusion_feature = fusion_feature.squeeze(0)
-        feature_attn3, attn_output_weights = self.multihead_attn3(fusion_feature, fusion_feature, fusion_feature)
-        fusion_feature = fusion_feature + feature_attn3
-        fusion_feature = self.batchnormal3(fusion_feature)
-        fusion_feature = fusion_feature.unsqueeze(dim=0).float()
+        # feature_contcat = torch.cat((feature1, feature2), dim=1)
+        # # 通过ASPP模块
+        # feature_contcat = self.aspp(feature_contcat)
+        # feature_contcat = self.conv3(feature_contcat)
+        # w1 = self.softmax(feature_contcat)
+        # fusion_feature = w1 * feature1 + (1-w1) * feature2
+        # # 通过多头自注意力模块3
+        # fusion_feature = fusion_feature.squeeze(0)
+        # feature_attn3, attn_output_weights = self.multihead_attn3(fusion_feature, fusion_feature, fusion_feature)
+        # fusion_feature = fusion_feature + feature_attn3
+        # fusion_feature = self.batchnormal3(fusion_feature)
+        # fusion_feature = fusion_feature.unsqueeze(dim=0).float()
 
         fusion_feature = self.conv4(fusion_feature)
         fusion_feature = fusion_feature.view(-1)
